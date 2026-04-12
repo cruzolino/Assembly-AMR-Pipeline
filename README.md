@@ -43,8 +43,8 @@ All tools must be available in your `$PATH` before running the pipeline.
 | Trimmomatic | ≥ 0.39 | Adapter trimming & quality filtering | `conda install -c bioconda trimmomatic` |
 | Unicycler | ≥ 0.5.0 | De novo assembly | `conda install -c bioconda unicycler` |
 | AMRFinder+ | ≥ 3.11 | AMR gene & point mutation detection | `conda install -c bioconda ncbi-amrfinderplus` |
-| AMR Rules | ≥ 1.0 | Phenotypic resistance interpretation | `pip install amr-rules` |
-| Python 3 | ≥ 3.8 | Required by AMR Rules | system / conda |
+| AMR Rules | ≥ 1.0 | Phenotypic resistance interpretation | `view https://docs.amrrules.org/en/genome_summary_report_dev/installation.html` |
+| Python 3 | ≥ 3.8 | Required by AMR Rules |
 
 ### Recommended: Conda environment
 
