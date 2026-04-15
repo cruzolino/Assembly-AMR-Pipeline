@@ -1,248 +1,342 @@
 # Prokaryotic Genome Assembly & AMR Analysis Pipeline
 
-A bash pipeline for de novo assembly of prokaryotic genomes from paired-end Illumina reads, followed by antimicrobial resistance (AMR) gene detection and phenotypic interpretation.
+**Version:** 2.0.0  
+**Script:** `prokaryotic_amr_pipeline.sh`  
+**Language:** Bash (requires Bash ≥ 4.2)
 
 ---
 
 ## Overview
 
-The pipeline runs three sequential stages:
+A four-stage shell pipeline for prokaryotic genome assembly and antimicrobial resistance (AMR) characterisation from bacterial sequencing data. The pipeline supports three sequencing modes — short reads (Illumina), long reads (Nanopore/PacBio), and hybrid (Illumina + Nanopore/PacBio) — and produces a polished assembly, a full AMRFinder+ gene report, and phenotypic resistance predictions from the AMR Rules tool.
 
 ```
-Raw FASTQ reads
-      │
-      ▼
-┌─────────────────────────────────────┐
-│  Stage 1 — QC & Assembly            │
-│  FastQC → Trimmomatic → FastQC      │
-│              → Unicycler            │
-└─────────────────────┬───────────────┘
-                      │ assembly.fasta
-                      ▼
-┌─────────────────────────────────────┐
-│  Stage 2 — AMRFinder+               │
-│  AMR gene & mutation detection      │
-└─────────────────────┬───────────────┘
-                      │ amrfinder.tsv
-                      ▼
-┌─────────────────────────────────────┐
-│  Stage 3 — AMR Rules                │
-│  Phenotypic resistance prediction   │
-└─────────────────────────────────────┘
+Reads  ──►  Stage 1: QC & Trimming
+            Stage 2: Assembly
+            Stage 3: AMR Gene Detection   (AMRFinder+)
+            Stage 4: Phenotypic Prediction (AMR Rules)  ──►  Summary report
 ```
+
+---
+
+## Modes at a glance
+
+| Mode | Input | Assembler | Polisher | Typical use case |
+|---|---|---|---|---|
+| `short` | Illumina PE | Unicycler | — | Standard WGS on short-read platforms |
+| `long` | ONT / PacBio | Flye | Medaka | Nanopore-only sequencing runs |
+| `hybrid` | Illumina PE + ONT/PacBio | Unicycler (hybrid) | — | Long reads for scaffolding, Illumina for accuracy |
 
 ---
 
 ## Dependencies
 
-All tools must be available in your `$PATH` before running the pipeline.
+### Conda environments
 
-| Tool | Version tested | Purpose | Install |
-|------|---------------|---------|---------|
-| FastQC | ≥ 0.11.9 | Read quality metrics | `conda install -c bioconda fastqc` |
-| Trimmomatic | ≥ 0.39 | Adapter trimming & quality filtering | `conda install -c bioconda trimmomatic` |
-| Unicycler | ≥ 0.5.0 | De novo assembly | `conda install -c bioconda unicycler` |
-| AMRFinder+ | ≥ 3.11 | AMR gene & point mutation detection | `conda install -c bioconda ncbi-amrfinderplus` |
-| AMR Rules | ≥ 1.0 | Phenotypic resistance interpretation | `view https://docs.amrrules.org/en/genome_summary_report_dev/installation.html` |
-| Python 3 | ≥ 3.8 | Required by AMR Rules |
-
-### Recommended: Conda environment
+AMR Rules **must** be installed in a dedicated conda environment named `amrrules_beta`. The pipeline calls it with `conda run`, so the calling shell does **not** need to have the environment activated.
 
 ```bash
-conda create -n amr_pipeline \
-    -c bioconda -c conda-forge \
-    fastqc trimmomatic unicycler ncbi-amrfinderplus python=3.10
-
-conda activate amr_pipeline
+conda create -n amrrules_beta python=3.10
+conda activate amrrules_beta
 pip install amr-rules
+conda deactivate
 ```
 
-### Adapter file
+The `conda` executable must be reachable in `PATH` (i.e. conda must be initialised in your shell profile).
 
-Trimmomatic requires an adapter FASTA file. Common options shipped with Trimmomatic:
+### Tools by mode
 
-- `NexteraPE-PE.fa` — Nextera XT libraries (default in this pipeline)
-- `TruSeq3-PE-2.fa` — Illumina TruSeq libraries
-- `TruSeq2-PE.fa` — older Illumina GA/HiSeq libraries
+The table below lists every tool that must be available in `PATH` (outside of `amrrules_beta`). Install via conda/mamba or the method recommended by each tool's documentation.
 
-Locate your Trimmomatic installation's adapter directory with:
+| Tool | Version tested | Mode | Purpose |
+|---|---|---|---|
+| `fastqc` | ≥ 0.12 | short, hybrid | Raw and trimmed read QC |
+| `trimmomatic` | ≥ 0.39 | short, hybrid | Illumina adapter trimming and quality filtering |
+| `unicycler` | ≥ 0.5 | short, hybrid | SPAdes-based short-read / hybrid assembly |
+| `nanostat` | ≥ 1.6 | long, hybrid | Long-read QC statistics |
+| `nanofilt` | ≥ 2.8 | long, hybrid | Long-read quality and length filtering |
+| `flye` | ≥ 2.9 | long | Long-read de novo assembly |
+| `medaka_consensus` | ≥ 1.8 | long | Nanopore consensus polishing |
+| `amrfinder` | ≥ 3.11 | all | AMR gene detection (NCBI AMRFinder+) |
+| `minimap2` | ≥ 2.24 | hybrid | Required internally by Unicycler hybrid mode |
+
+> **Tip — suggested conda setup for non-AMR-Rules tools:**
+> ```bash
+> mamba create -n amr_pipeline -c bioconda -c conda-forge \
+>     fastqc trimmomatic unicycler \
+>     nanostat nanofilt flye medaka \
+>     ncbi-amrfinderplus minimap2
+> conda activate amr_pipeline
+> ```
+
+---
+
+## Installation
 
 ```bash
-dirname $(which trimmomatic)/../share/trimmomatic/adapters/
+# Clone or download the script
+git clone https://github.com/your-org/prokaryotic-amr-pipeline.git
+cd prokaryotic-amr-pipeline
+
+# Make executable
+chmod +x prokaryotic_amr_pipeline.sh
 ```
+
+No compilation is required.
 
 ---
 
 ## Usage
 
-```bash
-bash prokaryotic_amr_pipeline.sh \
-    -1 <R1.fastq.gz> \
-    -2 <R2.fastq.gz> \
-    -s <sample_name> \
-    -o <output_dir> \
-    [options]
+```
+prokaryotic_amr_pipeline.sh -m <short|long|hybrid> [options]
 ```
 
-### Required arguments
+### Required flags (all modes)
 
 | Flag | Description |
-|------|-------------|
-| `-1` | Forward reads (FASTQ or FASTQ.gz) |
-| `-2` | Reverse reads (FASTQ or FASTQ.gz) |
-| `-s` | Sample name — used for all output file naming |
+|---|---|
+| `-m` | Assembly mode: `short`, `long`, or `hybrid` |
+| `-s` | Sample name — used as a prefix for all output files |
 | `-o` | Output directory (created if it does not exist) |
 
-### Optional arguments
+### Read input flags
+
+| Flag | Required for | Description |
+|---|---|---|
+| `-1` | `short`, `hybrid` | Illumina forward reads (FASTQ / FASTQ.gz) |
+| `-2` | `short`, `hybrid` | Illumina reverse reads (FASTQ / FASTQ.gz) |
+| `-l` | `long`, `hybrid` | Long reads (FASTQ / FASTQ.gz) |
+
+### Optional flags
 
 | Flag | Default | Description |
-|------|---------|-------------|
+|---|---|---|
 | `-t` | `8` | Number of CPU threads |
-| `-g` | _(none)_ | Organism name for AMRFinder+ species-specific detection (see list below) |
-| `-a` | `NexteraPE-PE.fa` | Path to Trimmomatic adapter FASTA file |
+| `-g` | _(none)_ | Organism name for AMRFinder+ (e.g. `Escherichia`, `Klebsiella`, `Salmonella`). Enables organism-specific point mutation detection. |
+| `-a` | `NexteraPE-PE.fa` | Trimmomatic adapter FASTA file |
+| `-q` | `8` | NanoFilt minimum Phred quality score |
+| `-L` | `500` | NanoFilt minimum read length (bp) |
+| `-x` | _(none, **required** for `long`/`hybrid`)_ | Estimated genome size for Flye (e.g. `5m`, `4.5m`, `2.8m`) |
+| `-r` | `nano-raw` | Flye read type: `nano-raw`, `nano-hq`, `nano-corr`, `pacbio-raw`, `pacbio-corr`, `pacbio-hifi` |
 | `-h` | — | Print help and exit |
 
-### `-g` organism values (AMRFinder+)
+### Medaka model
 
-Providing an organism enables point mutation detection for known chromosomal resistance mechanisms. Accepted values include:
+The Medaka polishing model (long mode only) is not a command-line flag. Set it via the environment variable `MEDAKA_MODEL` before calling the script. If unset, it defaults to `r941_min_sup_g507`.
 
-`Acinetobacter_baumannii`, `Burkholderia_cepacia`, `Burkholderia_pseudomallei`, `Campylobacter`, `Clostridioides_difficile`, `Enterococcus_faecalis`, `Enterococcus_faecium`, `Escherichia`, `Klebsiella_oxytoca`, `Klebsiella_pneumoniae`, `Neisseria_gonorrhoeae`, `Neisseria_meningitidis`, `Pseudomonas_aeruginosa`, `Salmonella`, `Staphylococcus_aureus`, `Staphylococcus_pseudintermedius`, `Streptococcus_agalactiae`, `Streptococcus_pneumoniae`, `Streptococcus_pyogenes`, `Vibrio_cholerae`
+```bash
+export MEDAKA_MODEL="r1041_e82_400bps_sup_v5.0.0"
+bash prokaryotic_amr_pipeline.sh -m long ...
+```
 
-For unlisted species, omit `-g` — gene-based detection still runs.
+Refer to the [Medaka documentation](https://github.com/nanoporetech/medaka#models) for the correct model for your flowcell and basecalling version.
 
 ---
 
-## Example
+## Examples
+
+### Short-read assembly (Illumina WGS)
 
 ```bash
-# E. coli isolate, 16 threads
 bash prokaryotic_amr_pipeline.sh \
-    -1 data/ECO_001_R1.fastq.gz \
-    -2 data/ECO_001_R2.fastq.gz \
-    -s ECO_001 \
-    -o results/ECO_001 \
+    -m short \
+    -1 sample_R1.fastq.gz \
+    -2 sample_R2.fastq.gz \
+    -s KPNEUMO_001 \
+    -o results/KPNEUMO_001 \
     -t 16 \
-    -g Escherichia \
-    -a /opt/trimmomatic/adapters/TruSeq3-PE-2.fa
+    -g Klebsiella
 ```
+
+### Long-read assembly (Nanopore only)
+
+```bash
+bash prokaryotic_amr_pipeline.sh \
+    -m long \
+    -l sample_ont.fastq.gz \
+    -s KPNEUMO_001 \
+    -o results/KPNEUMO_001 \
+    -t 16 \
+    -x 5m \
+    -r nano-hq \
+    -g Klebsiella
+```
+
+### Hybrid assembly (Illumina + Nanopore)
+
+```bash
+bash prokaryotic_amr_pipeline.sh \
+    -m hybrid \
+    -1 sample_R1.fastq.gz \
+    -2 sample_R2.fastq.gz \
+    -l sample_ont.fastq.gz \
+    -s KPNEUMO_001 \
+    -o results/KPNEUMO_001 \
+    -t 16 \
+    -x 5m \
+    -g Klebsiella
+```
+
+### PacBio HiFi assembly
+
+```bash
+bash prokaryotic_amr_pipeline.sh \
+    -m long \
+    -l sample_hifi.fastq.gz \
+    -s ECOLI_042 \
+    -o results/ECOLI_042 \
+    -t 16 \
+    -x 5m \
+    -r pacbio-hifi \
+    -g Escherichia
+```
+
+---
+
+## Pipeline stages
+
+### Stage 1 — Quality control
+
+**Short / hybrid mode (Illumina reads)**
+
+1. `FastQC` is run on raw paired reads to generate per-base quality, GC content, and adapter content reports.
+2. `Trimmomatic` (PE mode) removes adapter sequences and low-quality bases using a sliding-window filter (window 4, mean Q ≥ 15), hard-clips leading/trailing bases below Q3, and discards reads shorter than 50 bp.
+3. `FastQC` is re-run on the trimmed paired output.
+
+**Long / hybrid mode (Nanopore / PacBio reads)**
+
+1. `NanoStat` produces a summary of read N50, mean quality, total bases, and read-length distribution.
+2. `NanoFilt` filters reads below the specified minimum Q score (default Q8) and minimum length (default 500 bp), writing a compressed FASTQ.
+
+### Stage 2 — Assembly
+
+**Short mode** — `Unicycler` assembles trimmed Illumina paired reads using its SPAdes-based pipeline. Unicycler selects the best SPAdes k-mer graph, trims overlaps, and attempts to circularise replicons.
+
+**Long mode** — `Flye` assembles NanoFilt-filtered long reads into a draft genome, producing contigs and an assembly graph. The draft is then polished with `Medaka` (`medaka_consensus`), which realigns the original reads to the draft assembly and calls a consensus using a neural network model. The final polished FASTA is used for all downstream steps.
+
+**Hybrid mode** — `Unicycler` is run in hybrid mode, supplying both trimmed Illumina paired reads (`-1/-2`) and NanoFilt-filtered long reads (`-l`). Unicycler uses the long reads to bridge SPAdes assembly graph gaps and resolve repeats, while the Illumina reads correct base-level errors. No separate polishing step is needed.
+
+In all modes, the final assembly is copied to `<outdir>/03_assembly/<sample>_assembly.fasta`.
+
+### Stage 3 — AMR gene detection (AMRFinder+)
+
+`AMRFinder+` is run in nucleotide mode (`--nucleotide`) against the assembly FASTA with the `--plus` flag, which adds stress, virulence, and biocide gene detection on top of the core AMR gene set. If an organism name is provided with `-g`, species-specific point mutation rules are also applied.
+
+The AMRFinder+ database is updated automatically at the start of this stage. If the update fails (e.g. offline HPC node), a warning is printed and the pipeline continues with the existing local database.
+
+Output: a TSV report (`<sample>_amrfinder.tsv`) with one row per detected element, including gene name, sequence name, coverage, identity, element type, and predicted drug class.
+
+### Stage 4 — Phenotypic AMR interpretation (AMR Rules)
+
+`AMR Rules` translates the AMRFinder+ gene-detection output into predicted phenotypic resistance profiles, applying curated rule sets that map genotype to clinical breakpoint categories (S/I/R).
+
+Because AMR Rules is only available inside the `amrrules_beta` conda environment, this stage uses `conda run -n amrrules_beta`, which spawns the tool as a subprocess inside that environment without requiring the calling shell to activate it. This approach is safe with `set -euo pipefail` and compatible with non-interactive schedulers (SLURM, PBS, Snakemake, Nextflow).
+
+Before execution, the pipeline verifies that `amr_rules` (or the `amr_rules` Python module) is importable inside `amrrules_beta`, and exits with a descriptive error if not found.
 
 ---
 
 ## Output structure
 
 ```
-<output_dir>/
-├── 01_fastqc_raw/
-│   ├── <sample>_R1_fastqc.html        # Raw read QC report (forward)
-│   └── <sample>_R2_fastqc.html        # Raw read QC report (reverse)
+<outdir>/
+├── 01_qc/
+│   ├── <sample>_R1_fastqc.html          # FastQC report — raw R1 (short/hybrid)
+│   ├── <sample>_R2_fastqc.html          # FastQC report — raw R2 (short/hybrid)
+│   ├── <sample>_R1_paired_fastqc.html   # FastQC report — trimmed R1 (short/hybrid)
+│   ├── <sample>_R2_paired_fastqc.html   # FastQC report — trimmed R2 (short/hybrid)
+│   └── <sample>_nanostat_raw.txt        # NanoStat summary (long/hybrid)
 │
-├── 02_trimmomatic/
-│   ├── <sample>_R1_paired.fastq.gz    # Trimmed forward reads (used downstream)
-│   ├── <sample>_R2_paired.fastq.gz    # Trimmed reverse reads (used downstream)
-│   ├── <sample>_R1_unpaired.fastq.gz  # Orphaned forward reads
-│   └── <sample>_R2_unpaired.fastq.gz  # Orphaned reverse reads
+├── 02_trimmed/
+│   ├── <sample>_R1_paired.fastq.gz      # Trimmomatic output — R1 paired (short/hybrid)
+│   ├── <sample>_R2_paired.fastq.gz      # Trimmomatic output — R2 paired (short/hybrid)
+│   ├── <sample>_R1_unpaired.fastq.gz    # Trimmomatic output — R1 singletons
+│   ├── <sample>_R2_unpaired.fastq.gz    # Trimmomatic output — R2 singletons
+│   └── <sample>_long_filtered.fastq.gz  # NanoFilt output (long/hybrid)
 │
-├── 03_fastqc_trimmed/
-│   ├── <sample>_R1_paired_fastqc.html # Post-trim QC report (forward)
-│   └── <sample>_R2_paired_fastqc.html # Post-trim QC report (reverse)
+├── 03_assembly/
+│   ├── unicycler/                        # Full Unicycler output dir (short mode)
+│   ├── unicycler_hybrid/                 # Full Unicycler output dir (hybrid mode)
+│   ├── flye/                             # Full Flye output dir (long mode)
+│   ├── medaka/                           # Full Medaka output dir (long mode)
+│   └── <sample>_assembly.fasta          # Final assembly used downstream (all modes)
 │
-├── 04_assembly/
-│   ├── <sample>_assembly.fasta        # Final assembled contigs (used downstream)
-│   ├── assembly.fasta                 # Original Unicycler output
-│   └── assembly.gfa                   # Assembly graph
+├── 04_amrfinder/
+│   └── <sample>_amrfinder.tsv           # AMRFinder+ tabular results
 │
-├── 05_amrfinder/
-│   └── <sample>_amrfinder.tsv         # AMR gene/mutation report
-│
-├── 06_amr_rules/
-│   └── <sample>_amr_rules.*           # Phenotypic resistance predictions
+├── 05_amr_rules/
+│   └── <sample>_amr_rules*              # AMR Rules phenotypic output
 │
 ├── logs/
 │   ├── <sample>_fastqc_raw.log
 │   ├── <sample>_trimmomatic.log
 │   ├── <sample>_fastqc_trimmed.log
-│   ├── <sample>_unicycler.log
+│   ├── <sample>_nanostat.log
+│   ├── <sample>_nanofilt.log
+│   ├── <sample>_flye.log
+│   ├── <sample>_medaka.log
+│   ├── <sample>_unicycler.log           # or _unicycler_hybrid.log
 │   ├── <sample>_amrfinder_update.log
 │   ├── <sample>_amrfinder.log
 │   └── <sample>_amr_rules.log
 │
-└── <sample>_pipeline_summary.txt      # Run summary (inputs, contig count, AMR hits)
+└── <sample>_pipeline_summary.txt        # Plain-text run summary
 ```
-
----
-
-## Stage details
-
-### Stage 1 — Quality control & assembly
-
-**FastQC (raw)** generates per-base quality scores, GC content, adapter content, and duplication metrics for the raw reads. These reports serve as baseline documentation.
-
-**Trimmomatic** runs in paired-end mode with the following defaults:
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `ILLUMINACLIP` | `2:30:10` | Adapter clipping (seed mismatches : palindrome threshold : simple clip threshold) |
-| `LEADING` | `3` | Remove leading bases below quality 3 |
-| `TRAILING` | `3` | Remove trailing bases below quality 3 |
-| `SLIDINGWINDOW` | `4:15` | Cut when 4-base window average quality drops below 15 |
-| `MINLEN` | `50` | Discard reads shorter than 50 bp after trimming |
-
-These defaults are conservative and suitable for most Illumina short-read data. Adjust them directly in the script header if your library chemistry requires different thresholds.
-
-**FastQC (trimmed)** repeats quality assessment on the paired trimmed reads. Compare the pre- and post-trimming reports (or aggregate them with [MultiQC](https://multiqc.info/)) to confirm adapter removal and quality improvement.
-
-**Unicycler** assembles the trimmed paired reads using a short-read-only mode. It internally orchestrates SPAdes and Pilon to produce a polished, circularised assembly where possible. Only paired reads are passed to the assembler; orphaned reads from Trimmomatic are retained in the output directory but not used.
-
-### Stage 2 — AMRFinder+
-
-AMRFinder+ (NCBI's Antimicrobial Resistance Gene Finder) screens the assembly nucleotide FASTA against the NCBI Reference Gene Database. The pipeline:
-
-- Runs `amrfinder --update` at the start of each run to pull the latest database version. If the update fails (e.g. offline environment), a warning is issued and the existing local database is used.
-- Passes `--plus` to extend detection beyond AMR genes to include stress response, virulence, and biocide resistance elements.
-- Passes `--organism` when the `-g` flag is provided, enabling point mutation screening for chromosomal resistance determinants (e.g. *gyrA*, *parC* mutations conferring fluoroquinolone resistance in *E. coli*).
-
-The output TSV contains one row per detected element with columns for gene name, sequence name, coordinates, strand, element type, subtype, drug class, and resistance mechanism.
-
-### Stage 3 — AMR Rules
-
-AMR Rules applies a curated rule set to the AMRFinder+ TSV to translate detected genes and mutations into predicted phenotypic resistance profiles (e.g. predicted resistance to specific antibiotic classes per clinical breakpoint logic). The pipeline auto-detects whether AMR Rules is installed as a command-line tool (`amr_rules`) or as a Python module (`python3 -m amr_rules`).
 
 ---
 
 ## Troubleshooting
 
-**Pipeline exits immediately with "Required tool not found in PATH"**
-Activate your conda environment before running: `conda activate amr_pipeline`
+**`conda environment 'amrrules_beta' not found`**  
+The `amrrules_beta` environment does not exist. Create it and install `amr-rules` as described in the [Dependencies](#dependencies) section. Confirm with `conda env list`.
 
-**Trimmomatic fails with "Unable to detect quality encoding"**
-Your reads may use Phred+33 or Phred+64 encoding. Add `-phred33` or `-phred64` to the Trimmomatic call in the script.
+**`amr_rules not found inside conda env 'amrrules_beta'`**  
+The environment exists but `amr-rules` is not installed inside it. Activate the environment manually (`conda activate amrrules_beta`) and run `pip install amr-rules`.
 
-**Trimmomatic fails to find the adapter file**
-Pass the full absolute path with `-a /path/to/adapters/NexteraPE-PE.fa`. Locate available adapter files with `find $(conda info --base) -name "*.fa" | grep -i adapter`.
+**`Flye assembly.fasta not found`**  
+Flye failed to produce an assembly. Common causes: genome size estimate too far off (`-x`), read depth below ~10×, or corrupted input FASTQ. Inspect `logs/<sample>_flye.log` for details. Flye is more tolerant of uneven depth than most assemblers, but very low coverage (< 5–8×) assemblies are frequently incomplete.
 
-**Unicycler produces 0 contigs or fails**
-Check `logs/<sample>_unicycler.log`. Common causes: insufficient read depth (< 20×), very short reads after trimming, or SPAdes running out of memory. For low-depth samples consider reducing SPAdes k-mer sizes.
+**`Medaka consensus.fasta not found`**  
+Medaka completed without writing output, which typically indicates a model mismatch. Set the correct model for your chemistry via `export MEDAKA_MODEL=<model>` before running the pipeline. Run `medaka tools list_models` inside the relevant conda environment to see available models.
 
-**AMRFinder+ update fails in an HPC environment**
-Run `amrfinder --update` once on a login node with internet access before submitting the pipeline as a job. The database is cached locally and the pipeline will use the cached version.
+**`Unicycler assembly.fasta not found`**  
+Unicycler failed. Inspect `logs/<sample>_unicycler.log`. Unicycler requires paired reads with sufficient overlap; very low coverage (< 20×), highly fragmented reads, or missing `minimap2` (in hybrid mode) are the most common causes.
 
-**AMR Rules not found**
-Install with `pip install amr-rules` inside the activated conda environment. Verify with `python3 -c "import amr_rules; print(amr_rules.__version__)"`.
+**`AMRFinder+ database update failed`**  
+This is a non-fatal warning. The pipeline continues with the currently installed database. To update manually: `amrfinder --update`. On air-gapped systems, follow the [offline update instructions](https://github.com/ncbi/amr/wiki/Installing-AMRFinder#offline-install) from NCBI.
+
+**Pipeline exits immediately with `set -euo pipefail`**  
+Any non-zero exit from any command will abort the pipeline. Check the most recent log file in `logs/` for the actual error. Pipe failures (e.g. broken gzip stream in NanoFilt) are also caught.
+
+---
+
+## Notes on assembly mode selection
+
+**Use `short`** when you have Illumina PE reads only. Unicycler typically produces near-complete assemblies for organisms with genomes under 10 Mb, though chromosomal repetitive regions (IS elements, rRNA operons) frequently remain unresolved.
+
+**Use `long`** when you have Nanopore or PacBio reads only and want complete, circularised chromosomes and plasmids. Requires minimum ~20–30× depth for Flye; Medaka polishing requires the same reads used for assembly. Choose the Medaka model matching your flowcell chemistry and basecaller version.
+
+**Use `hybrid`** when you have both data types. Unicycler's hybrid mode uses long reads to span repeats and circularise replicons while using Illumina reads to correct substitution and indel errors introduced by long-read basecalling. This typically yields the highest-quality assemblies and is particularly recommended for AMR studies, where accurate gene sequences are critical for AMRFinder+ point mutation calling.
 
 ---
 
 ## Citation
 
-If you use this pipeline in published work, please cite the underlying tools:
+If you use this pipeline, please cite the underlying tools:
 
-- **FastQC** — Andrews S. (2010). FastQC: A Quality Control Tool for High Throughput Sequence Data. https://www.bioinformatics.babraham.ac.uk/projects/fastqc/
-- **Trimmomatic** — Bolger AM, Lohse M, Usadel B. (2014). Trimmomatic: a flexible trimmer for Illumina sequence data. *Bioinformatics*, 30(15):2114–2120.
-- **Unicycler** — Wick RR, Judd LM, Gorrie CL, Holt KE. (2017). Unicycler: Resolving bacterial genome assemblies from short and long sequencing reads. *PLOS Computational Biology*, 13(6):e1005595.
-- **AMRFinder+** — Feldgarden M et al. (2021). AMRFinderPlus and the Reference Gene Catalog facilitate examination of the genomic links among antimicrobial resistance, stress response, and virulence. *Scientific Reports*, 11:12728.
-- **AMR Rules** — cite per the tool's repository/publication.
+- **FastQC** — Andrews S. (2010). FastQC: a quality control tool for high throughput sequence data. https://www.bioinformatics.babraham.ac.uk/projects/fastqc/
+- **Trimmomatic** — Bolger AM et al. (2014). *Bioinformatics*, 30(15):2114–2120.
+- **Unicycler** — Wick RR et al. (2017). *PLOS Computational Biology*, 13(6):e1005595.
+- **NanoStat** — De Coster W & Rademakers R. (2023). *Bioinformatics*, 39(5):btad311.
+- **NanoFilt** — De Coster W et al. (2018). *Bioinformatics*, 34(15):2666–2669.
+- **Flye** — Kolmogorov M et al. (2019). *Nature Methods*, 16:1050–1054.
+- **Medaka** — Oxford Nanopore Technologies. https://github.com/nanoporetech/medaka
+- **AMRFinder+** — Feldgarden M et al. (2021). *Scientific Reports*, 11:12728.
+- **AMR Rules** — Cite per the tool's own documentation / repository.
 
 ---
 
-## License
+## Licence
 
-This pipeline script is released under the MIT License. The tools it wraps are subject to their own respective licenses.
+This pipeline script is released under the MIT Licence. See `LICENSE` for details.
